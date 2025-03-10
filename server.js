@@ -10,14 +10,31 @@ dotenv.config();
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use(express.static('public'));
+app.use(express.static(path.join(__dirname)));
 
 // Helper function to scrape Google Scholar
 async function searchGoogleScholar(query) {
     try {
-        const response = await axios.get(`https://scholar.google.com/scholar?q=${encodeURIComponent(query)}`);
-        // Process and return results
-        // Note: Google Scholar might have restrictions on scraping
+        const response = await axios.get(`https://scholar.google.com/scholar?q=${encodeURIComponent(query)}`, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+        });
+        
+        const $ = cheerio.load(response.data);
+        const results = [];
+
+        $('.gs_r.gs_or.gs_scl').each((i, element) => {
+            results.push({
+                title: $(element).find('.gs_rt').text().trim(),
+                link: $(element).find('.gs_rt a').attr('href'),
+                authors: $(element).find('.gs_a').text().trim(),
+                snippet: $(element).find('.gs_rs').text().trim(),
+                source: 'Google Scholar'
+            });
+        });
+
+        return results;
     } catch (error) {
         console.error('Google Scholar search error:', error);
         return [];
@@ -57,66 +74,154 @@ async function searchResearchGate(query) {
 // Semantic Scholar API
 async function searchSemanticScholar(query) {
     try {
-        const response = await axios.get(`https://api.semanticscholar.org/graph/v1/paper/search?query=${encodeURIComponent(query)}`);
-        // Process and return results
-        return [];
+        const response = await axios.get('https://api.semanticscholar.org/graph/v1/paper/search', {
+            params: {
+                query: query,
+                limit: 10,
+                fields: 'title,authors,abstract,url,year,venue'
+            }
+        });
+
+        return response.data.data
+            .filter(paper => paper.title && (paper.url || paper.paperId))
+            .map(paper => ({
+                title: paper.title,
+                authors: paper.authors?.map(a => a.name).join(', ') || 'Unknown Authors',
+                link: paper.url || `https://www.semanticscholar.org/paper/${paper.paperId}`,
+                year: paper.year,
+                snippet: paper.abstract || paper.title,
+                source: 'Semantic Scholar'
+            }));
     } catch (error) {
-        console.error('Semantic Scholar search error:', error);
+        console.error('Semantic Scholar error:', error.response?.data || error.message);
         return [];
     }
 }
 
-// PubMed API (no API key needed)
+// PubMed API
 async function searchPubMed(query) {
     try {
-        // First, search for IDs
-        const searchResponse = await axios.get(
-            `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi`,
-            {
-                params: {
-                    db: 'pubmed',
-                    term: query,
-                    retmax: 10,
-                    format: 'json'
-                }
+        // First search for IDs
+        const searchResponse = await axios.get('https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi', {
+            params: {
+                db: 'pubmed',
+                term: query,
+                retmax: 10,
+                retmode: 'json'
             }
-        );
+        });
+
+        if (!searchResponse.data?.esearchresult?.idlist) {
+            console.error('Invalid PubMed search response:', searchResponse.data);
+            return [];
+        }
 
         const ids = searchResponse.data.esearchresult.idlist;
 
-        // Then fetch details for these IDs
-        const detailsResponse = await axios.get(
-            `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi`,
-            {
-                params: {
-                    db: 'pubmed',
-                    id: ids.join(','),
-                    format: 'json'
-                }
+        // Then fetch details
+        const detailsResponse = await axios.get('https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi', {
+            params: {
+                db: 'pubmed',
+                id: ids.join(','),
+                retmode: 'json'
             }
-        );
+        });
+
+        if (!detailsResponse.data?.result) {
+            console.error('Invalid PubMed details response:', detailsResponse.data);
+            return [];
+        }
 
         return Object.values(detailsResponse.data.result)
-            .filter(item => item.uid)
+            .filter(paper => paper.uid && paper.title)
             .map(paper => ({
                 title: paper.title,
-                authors: paper.authors?.map(a => a.name).join(', '),
-                link: `https://pubmed.ncbi.nlm.nih.gov/${paper.uid}`,
+                authors: paper.authors?.map(a => a.name).join(', ') || 'Unknown Authors',
+                link: `https://pubmed.ncbi.nlm.nih.gov/${paper.uid}/`,
                 year: paper.pubdate?.substring(0, 4),
-                snippet: paper.abstract,
+                snippet: paper.abstract || paper.title,
                 source: 'PubMed'
             }));
     } catch (error) {
-        console.error('PubMed error:', error);
+        console.error('PubMed error:', error.response?.data || error.message);
         return [];
     }
 }
 
-// Europe PMC (no API key needed)
+// OpenAlex API
+async function searchOpenAlex(query) {
+    try {
+        const response = await axios.get('https://api.openalex.org/works', {
+            params: {
+                search: query,
+                per_page: 10,
+                filter: 'has_doi:true'
+            },
+            headers: {
+                'User-Agent': 'ResearchAssistant/1.0'
+            }
+        });
+
+        if (!response.data?.results) {
+            console.error('Invalid OpenAlex response:', response.data);
+            return [];
+        }
+
+        return response.data.results
+            .filter(paper => paper.title && (paper.doi || paper.open_access_url))
+            .map(paper => ({
+                title: paper.title,
+                authors: paper.authorships?.map(a => a.author.display_name).join(', ') || 'Unknown Authors',
+                link: paper.open_access_url || `https://doi.org/${paper.doi}`,
+                year: paper.publication_year,
+                snippet: paper.abstract || paper.title,
+                source: 'OpenAlex'
+            }));
+    } catch (error) {
+        console.error('OpenAlex error:', error.response?.data || error.message);
+        return [];
+    }
+}
+
+// CORE API
+async function searchCore(query) {
+    try {
+        const response = await axios.get('https://api.core.ac.uk/v3/search/works', {
+            params: {
+                q: query,
+                limit: 10
+            },
+            headers: {
+                'Authorization': `Bearer ${process.env.CORE_API_KEY}`
+            }
+        });
+
+        if (!response.data?.results) {
+            console.error('Invalid CORE response:', response.data);
+            return [];
+        }
+
+        return response.data.results
+            .filter(paper => paper.title && (paper.downloadUrl || paper.doi))
+            .map(paper => ({
+                title: paper.title,
+                authors: paper.authors?.map(a => a.name).join(', ') || 'Unknown Authors',
+                link: paper.downloadUrl || (paper.doi ? `https://doi.org/${paper.doi}` : ''),
+                year: paper.yearPublished,
+                snippet: paper.abstract || paper.title,
+                source: 'CORE'
+            }));
+    } catch (error) {
+        console.error('CORE error:', error.response?.data || error.message);
+        return [];
+    }
+}
+
+// Europe PMC API
 async function searchEuropePMC(query) {
     try {
         const response = await axios.get(
-            `https://www.ebi.ac.uk/europepmc/webservices/rest/search`,
+            'https://www.ebi.ac.uk/europepmc/webservices/rest/search',
             {
                 params: {
                     query: query,
@@ -126,60 +231,164 @@ async function searchEuropePMC(query) {
             }
         );
 
-        return response.data.resultList.result.map(paper => ({
-            title: paper.title,
-            authors: paper.authorString,
-            link: `https://europepmc.org/article/${paper.source}/${paper.id}`,
-            year: paper.pubYear,
-            snippet: paper.abstractText,
-            source: 'Europe PMC'
-        }));
+        if (!response.data?.resultList?.result) {
+            console.error('Invalid Europe PMC response:', response.data);
+            return [];
+        }
+
+        return response.data.resultList.result
+            .filter(paper => paper.title && paper.id) // Only include papers with title and ID
+            .map(paper => ({
+                title: paper.title,
+                authors: paper.authorString || 'Unknown Authors',
+                link: `https://europepmc.org/article/${paper.source}/${paper.id}`,
+                year: paper.pubYear,
+                snippet: paper.abstractText || paper.title,
+                source: 'Europe PMC'
+            }));
     } catch (error) {
-        console.error('Europe PMC error:', error);
+        console.error('Europe PMC error:', error.message);
         return [];
     }
 }
 
-// arXiv API (no API key needed)
+// arXiv API with better error handling
 async function searchArxiv(query) {
     try {
-        const response = await axios.get(`http://export.arxiv.org/api/query?search_query=${encodeURIComponent(query)}&max_results=10`);
-        const results = await parseArxivResults(response.data);
+        const response = await axios.get('http://export.arxiv.org/api/query', {
+            params: {
+                search_query: query,
+                max_results: 10,
+                sortBy: 'lastUpdatedDate',
+                sortOrder: 'descending'
+            }
+        });
+
+        const $ = cheerio.load(response.data, { xmlMode: true });
+        const results = [];
+
+        $('entry').each((i, entry) => {
+            const link = $(entry).find('id').text();
+            if (link) {
+                results.push({
+                    title: $(entry).find('title').text().replace(/\n/g, ' ').trim(),
+                    authors: $(entry).find('author name').map((_, name) => $(name).text()).get().join(', '),
+                    link: link,
+                    year: new Date($(entry).find('published').text()).getFullYear(),
+                    snippet: $(entry).find('summary').text().replace(/\n/g, ' ').trim(),
+                    source: 'arXiv'
+                });
+            }
+        });
+
         return results;
     } catch (error) {
-        console.error('arXiv search error:', error);
+        console.error('arXiv error:', error.message);
         return [];
     }
 }
 
-// CORE API (using your existing API key)
-async function searchCore(query) {
-    const CORE_API_KEY = process.env.CORE_API_KEY;
+// DOAJ (Directory of Open Access Journals)
+async function searchDOAJ(query) {
+    try {
+        const response = await axios.get(`https://doaj.org/api/v2/search/articles/${encodeURIComponent(query)}`, {
+            timeout: 10000, // 10 second timeout
+            headers: {
+                'Accept': 'application/json'
+            }
+        });
+
+        if (!response.data || !response.data.results) {
+            console.error('Invalid DOAJ response:', response.data);
+            return [];
+        }
+
+        return response.data.results
+            .filter(item => item.bibjson && item.bibjson.title)
+            .map(item => ({
+                title: item.bibjson.title,
+                authors: item.bibjson.author?.map(a => a.name).join(', ') || 'Unknown',
+                year: item.bibjson.year || 'N/A',
+                link: item.bibjson.link?.[0]?.url || `https://doaj.org/article/${item.id}`,
+                source: 'DOAJ',
+                snippet: item.bibjson.abstract || ''
+            }));
+    } catch (error) {
+        console.error('DOAJ error:', error.response?.data || error.message);
+        return [];
+    }
+}
+
+// ERIC (Education Resources Information Center)
+async function searchERIC(query) {
+    try {
+        const response = await axios.get(`https://api.ies.ed.gov/eric/`, {
+            params: {
+                search: query,
+                format: 'json',
+                rows: 10
+            },
+            timeout: 10000, // 10 second timeout
+            headers: {
+                'Accept': 'application/json'
+            }
+        });
+
+        if (!response.data || !response.data.response || !response.data.response.docs) {
+            console.error('Invalid ERIC response:', response.data);
+            return [];
+        }
+
+        return response.data.response.docs
+            .filter(item => item.title && item.url)
+            .map(item => ({
+                title: item.title,
+                authors: item.author || 'Unknown',
+                year: item.publicationDateTime?.split('-')[0] || 'N/A',
+                link: item.url,
+                source: 'ERIC',
+                snippet: item.description || ''
+            }));
+    } catch (error) {
+        console.error('ERIC error:', error.response?.data || error.message);
+        return [];
+    }
+}
+
+// BASE (Bielefeld Academic Search Engine) - Completely Free
+async function searchBASE(query) {
     try {
         const response = await axios.get(
-            'https://api.core.ac.uk/v3/search/works',
+            'https://api.base-search.net/cgi-bin/BaseHttpSearchInterface.fcgi',
             {
                 params: {
-                    q: query,
-                    limit: 10
-                },
-                headers: {
-                    'Authorization': `Bearer ${CORE_API_KEY}`
+                    func: 'PerformSearch',
+                    query: query,
+                    format: 'json',
+                    hits: 10
                 }
             }
         );
 
-        return response.data.results.map(paper => ({
-            title: paper.title || 'Untitled',
-            authors: paper.authors?.join(', ') || 'Unknown Authors',
-            link: paper.downloadUrl || paper.sourceFulltextUrl || 
-                  (paper.doi ? `https://doi.org/${paper.doi}` : '#'),
-            year: paper.yearPublished,
-            snippet: paper.abstract || 'No abstract available',
-            source: 'CORE'
-        }));
+        if (!response.data?.response?.docs) {
+            console.error('Invalid BASE response:', response.data);
+            return [];
+        }
+
+        return response.data.response.docs
+            .filter(doc => doc.dctitle && doc.dcidentifier)
+            .map(doc => ({
+                title: doc.dctitle,
+                authors: Array.isArray(doc.dccontributor) ? 
+                        doc.dccontributor.join(', ') : 
+                        doc.dccontributor || 'Unknown Authors',
+                link: doc.dcidentifier,
+                year: doc.dcyear,
+                snippet: doc.dcdescription || doc.dctitle,
+                source: 'BASE'
+            }));
     } catch (error) {
-        console.error('CORE error:', error);
+        console.error('BASE error:', error.message);
         return [];
     }
 }
@@ -275,91 +484,11 @@ async function searchGoogleBooks(query) {
     }
 }
 
-// DOAJ (Directory of Open Access Journals) - Completely Free
-async function searchDOAJ(query) {
-    try {
-        const response = await axios.get(`https://doaj.org/api/v2/search/articles/${encodeURIComponent(query)}`);
-        const results = response.data.results.map(item => ({
-            title: item.bibjson.title,
-            authors: item.bibjson.author?.map(a => a.name).join(', ') || 'Unknown',
-            year: item.bibjson.year || 'N/A',
-            link: item.bibjson.link?.[0]?.url || '#',
-            source: 'DOAJ',
-            snippet: item.bibjson.abstract || ''
-        }));
-        return results;
-    } catch (error) {
-        console.error('DOAJ search error:', error);
-        return [];
-    }
-}
-
-// BASE (Bielefeld Academic Search Engine) - Completely Free
-async function searchBASE(query) {
-    try {
-        const response = await axios.get(
-            `https://api.base-search.net/cgi-bin/BaseHttpSearchInterface.fcgi`,
-            {
-                params: {
-                    func: 'PerformSearch',
-                    query: query,
-                    format: 'json',
-                    hits: 10
-                }
-            }
-        );
-
-        return response.data.response.docs.map(paper => ({
-            title: paper.dctitle,
-            authors: paper.dccontributor?.join(', '),
-            link: paper.dcidentifier,
-            year: paper.dcyear,
-            snippet: paper.dcdescription,
-            source: 'BASE'
-        }));
-    } catch (error) {
-        console.error('BASE error:', error);
-        return [];
-    }
-}
-
-// OpenAlex API
-async function searchOpenAlex(query) {
-    try {
-        const response = await axios.get(
-            `https://api.openalex.org/works`,
-            {
-                params: {
-                    search: query,
-                    per_page: 10
-                },
-                headers: {
-                    'Accept': 'application/json',
-                    // Add your email for better support (optional)
-                    'User-Agent': 'ResearchFinder/1.0 (your@email.com)'
-                }
-            }
-        );
-
-        return response.data.results.map(paper => ({
-            title: paper.title,
-            authors: paper.authorships?.map(a => a.author.display_name).join(', '),
-            link: paper.doi ? `https://doi.org/${paper.doi}` : paper.primary_location?.landing_page_url,
-            year: paper.publication_year,
-            snippet: paper.abstract,
-            source: 'OpenAlex'
-        }));
-    } catch (error) {
-        console.error('OpenAlex error:', error);
-        return [];
-    }
-}
-
 // SciELO API
 async function searchSciELO(query) {
     try {
         const response = await axios.get(
-            `https://search.scielo.org/`,
+            'https://search.scielo.org/',
             {
                 params: {
                     q: query,
@@ -369,125 +498,125 @@ async function searchSciELO(query) {
             }
         );
 
-        return response.data.map(paper => ({
-            title: paper.title,
-            authors: paper.authors,
-            link: paper.url,
-            year: paper.year,
-            snippet: paper.abstract,
-            source: 'SciELO'
-        }));
+        if (!response.data?.hits?.hits) {
+            console.error('Invalid SciELO response:', response.data);
+            return [];
+        }
+
+        return response.data.hits.hits
+            .filter(hit => hit._source)
+            .map(hit => ({
+                title: hit._source.title,
+                authors: hit._source.authors?.join(', ') || 'Unknown Authors',
+                link: hit._source.url || `https://search.scielo.org/${hit._id}`,
+                year: hit._source.publication_year,
+                snippet: hit._source.abstract || hit._source.title,
+                source: 'SciELO'
+            }));
     } catch (error) {
-        console.error('SciELO error:', error);
+        console.error('SciELO error:', error.message);
         return [];
     }
 }
 
-// Redalyc API
-async function searchRedalyc(query) {
+// PMC (PubMed Central)
+async function searchPMC(query) {
     try {
         const response = await axios.get(
-            `https://www.redalyc.org/service/r2020/getData`,
+            'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi',
             {
                 params: {
-                    type: 'search',
-                    query: query,
-                    limit: 10
+                    db: 'pmc',
+                    term: query,
+                    retmax: 10,
+                    format: 'json'
                 }
             }
         );
 
-        return response.data.map(paper => ({
-            title: paper.title,
-            authors: paper.authors,
-            link: `https://www.redalyc.org/articulo.oa?id=${paper.id}`,
-            year: paper.year,
-            snippet: paper.abstract,
-            source: 'Redalyc'
-        }));
+        if (!response.data?.esearchresult?.idlist) {
+            console.error('Invalid PMC search response:', response.data);
+            return [];
+        }
+
+        const ids = response.data.esearchresult.idlist;
+        
+        // Get details for each ID
+        const detailsResponse = await axios.get(
+            'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi',
+            {
+                params: {
+                    db: 'pmc',
+                    id: ids.join(','),
+                    format: 'json'
+                }
+            }
+        );
+
+        if (!detailsResponse.data?.result) {
+            console.error('Invalid PMC details response:', detailsResponse.data);
+            return [];
+        }
+
+        return Object.values(detailsResponse.data.result)
+            .filter(item => item.uid && item.title)
+            .map(paper => ({
+                title: paper.title,
+                authors: paper.authors?.map(a => a.name).join(', ') || 'Unknown Authors',
+                link: `https://www.ncbi.nlm.nih.gov/pmc/articles/PMC${paper.uid}`,
+                year: paper.pubdate?.substring(0, 4),
+                snippet: paper.abstract || paper.title,
+                source: 'PMC'
+            }));
     } catch (error) {
-        console.error('Redalyc error:', error);
+        console.error('PMC error:', error.message);
         return [];
     }
 }
 
-// Add these new search functions
-async function searchPMC(query) {
-    try {
-        const response = await axios.get(`https://www.ncbi.nlm.nih.gov/pmc/utils/idconv/v1.0/?tool=my_tool&email=my_email@example.com&ids=${encodeURIComponent(query)}`);
-        // Process and return results
-        return [];
-    } catch (error) {
-        console.error('PMC search error:', error);
-        return [];
-    }
-}
-
-async function searchERIC(query) {
-    try {
-        const response = await axios.get(`https://api.ies.ed.gov/eric/?search=${encodeURIComponent(query)}&format=json`);
-        const results = response.data.response.docs.map(item => ({
-            title: item.title,
-            authors: item.author || 'Unknown',
-            year: item.publicationDateTime?.split('-')[0] || 'N/A',
-            link: item.url,
-            source: 'ERIC',
-            snippet: item.description || ''
-        }));
-        return results;
-    } catch (error) {
-        console.error('ERIC search error:', error);
-        return [];
-    }
-}
-
-async function searchPLOS(query) {
-    try {
-        const response = await axios.get(`https://api.plos.org/search?q=${encodeURIComponent(query)}`);
-        // Process and return results
-        return [];
-    } catch (error) {
-        console.error('PLOS search error:', error);
-        return [];
-    }
-}
-
-// Update the main search endpoint
 app.get("/search", async (req, res) => {
     try {
         const query = req.query.q;
         if (!query) {
-            return res.status(400).json({ error: 'Search query is required' });
+            return res.status(400).json({ 
+                error: 'Query parameter is required',
+                message: 'Please provide a search query'
+            });
         }
 
-        // Fetch results from all sources in parallel
+        // Run searches in parallel
         const results = await Promise.all([
-            searchArxiv(query),
             searchDOAJ(query),
-            searchERIC(query),
-            searchPMC(query),
-            // Add more sources here
+            searchSemanticScholar(query),
+            searchCore(query),
+            searchOpenAlex(query),
+            searchPubMed(query),
+            searchERIC(query)
         ]);
 
-        // Combine and remove duplicates
-        const combinedResults = results
+        // Combine and filter results
+        const allResults = results
             .flat()
-            .filter(Boolean)
-            .filter((result, index, self) => 
-                index === self.findIndex(r => r.title === result.title)
-            );
+            .filter(result => result && result.title && result.link);
 
-        // Sort by year (newest first)
-        combinedResults.sort((a, b) => {
-            const yearA = parseInt(a.year) || 0;
-            const yearB = parseInt(b.year) || 0;
-            return yearB - yearA;
+        // Remove duplicates
+        const uniqueResults = allResults.filter((result, index, self) =>
+            index === self.findIndex(r => r.title === result.title || r.link === result.link)
+        );
+
+        // Get list of sources that returned results
+        const sources = [...new Set(uniqueResults.map(r => r.source))];
+
+        res.json({
+            results: uniqueResults,
+            sources: sources
         });
-
-        res.json(combinedResults);
     } catch (error) {
         console.error('Search error:', error);
-        res.status(500).json({ error: 'Failed to fetch results' });
+        res.status(500).json({ 
+            error: 'An error occurred during the search',
+            message: error.message || 'Please try again later'
+        });
     }
 });
 
