@@ -1,6 +1,8 @@
 document.addEventListener('DOMContentLoaded', () => {
     const searchInput = document.getElementById('searchInput');
     const resultsContainer = document.querySelector('#results .results-content');
+    // Replace this URL with your actual Render URL when you get it
+    const API_URL = 'https://scholar-hub-backend.onrender.com';
 
     async function searchResearch() {
         const query = searchInput.value.trim();
@@ -15,7 +17,7 @@ document.addEventListener('DOMContentLoaded', () => {
         `;
 
         try {
-            const response = await fetch(`/search?q=${encodeURIComponent(query)}`);
+            const response = await fetch(`${API_URL}/search?q=${encodeURIComponent(query)}`);
             const data = await response.json();
             
             if (data.error) {

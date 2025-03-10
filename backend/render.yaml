@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: scholar-hub-backend
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: CORE_API_KEY
+        sync: false
