@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scholar Hub </title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="tabs">
+        <!-- Search Tab -->
+        <div id="searchTab" class="tab active">
+            <div class="hero-section">
+                <div class="brand">
+                    <div class="logo-container">
+                        <img src="/images/logo.png" alt="Logo" class="logo-image">
+                        <span class="logo-text">Scholar Hub</span>
+                    </div>
+                </div>
+                
+                <div class="content-wrapper">
+                    <div class="text-section">
+                        <h1>Flexible Solutions<br>for<br>Academic Research</h1>
+                        <p>Find the most relevant academic papers and research materials across multiple trusted sources with our AI-powered search system.</p>
+                        
+                        <div class="search-container">
+                            <input type="text" id="searchInput" class="search-bar" 
+                                   placeholder="Search for research papers..."
+                                   onkeypress="if(event.key === 'Enter') searchResearch()">
+                            <button onclick="searchResearch()" class="search-button">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <circle cx="11" cy="11" r="8"></circle>
+                                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="image-section">
+                        <img src="/images/robot.jpg" alt="AI Robot" class="robot-image">
+                    </div>
+                </div>
+
+                <footer class="footer">
+                    <p>© 2025 All Rights Reserved by Mecaela M. Estoque</p>
+                </footer>
+            </div>
+        </div>
+
+        <!-- Results Tab -->
+        <div id="resultsTab" class="tab">
+            <div class="results-header">
+                <div class="logo-container">
+                    <img src="/images/logo.png" alt="Logo" class="logo-image">
+                    <span class="logo-text">Scholar Hub</span>
+                </div>
+                <button class="new-search-btn" onclick="showSearchTab()">New Search</button>
+            </div>
+            
+            <div id="results">
+                <div class="results-content">
+                    <!-- Results will be populated here -->
+                </div>
+            </div>
+
+            <footer class="footer">
+                <p>© 2025 All Rights Reserved by Mecaela M. Estoque</p>
+            </footer>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
